@@ -1,0 +1,16 @@
+# Python
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+.tox/
+build/
+.cache/
+develop-eggs/
+.pytest_cache/
+.venv/
+venv/
+.Python
+.eggs/
