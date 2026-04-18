@@ -31,6 +31,8 @@ csv-diff file1.csv file2.csv
 --added              Show only added rows
 --removed            Show only removed rows
 --changed            Show only changed rows
+--no-color           Disable colored output
+--summary            Print a summary count of added, removed, and changed rows
 ```
 
 ### Example
@@ -41,6 +43,9 @@ csv-diff old_data.csv new_data.csv --key id --format json
 
 # Save a diff report to a file
 csv-diff report_jan.csv report_feb.csv -o diff_report.csv
+
+# Show only added and changed rows with a summary
+csv-diff old_data.csv new_data.csv --added --changed --summary
 ```
 
 ### Sample Output
@@ -49,6 +54,8 @@ csv-diff report_jan.csv report_feb.csv -o diff_report.csv
 ~ CHANGED  row 3  | name: "Alice" -> "Alicia"
 + ADDED    row 7  | id: 104, name: "Bob", age: 29
 - REMOVED  row 9  | id: 201, name: "Carol", age: 34
+
+Summary: 1 changed, 1 added, 1 removed
 ```
 
 ## Requirements
