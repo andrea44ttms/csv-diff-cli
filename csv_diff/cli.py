@@ -1,67 +1,97 @@
-"""Command-line interface for csv-diff-cli."""
-
-import sys
+"""CLI entry point for csv-diff."""
+from __future__ import annotations
 import argparse
+import sys
 
-from csv_diff.parser import load_csv, CSVParseError
-from csv_diff.differ import diff_csv, DiffError
-from csv_diff.formatter import render
-from csv_diff.filter import filter_rows, FilterError
+from .parser import load_csv, CSVParseError
+from .differ import diff_csv, DiffError
+from .formatter import render
+from .filter import parse_filter, apply_filter, FilterError
+from .stats import compute_stats, format_stats
+from .transformer import parse_columns, parse_rename, apply_transforms, TransformError
+from .patcher import patch_rows, patch_to_csv_lines, PatchError
+from .exporter import export, ExportError
+from .merger import merge_diffs, MergeError
+from .sampler import parse_sample_size, sample_diff, SampleError
+from .pivot import parse_pivot_spec, pivot_rows, pivot_to_rows, PivotError
+from .aggregator import parse_group_by, aggregate_diff, format_aggregate, AggregateError
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="csv-diff",
-        description="Compare two CSV files and highlight differences.",
-    )
-    p.add_argument("file_a", help="First (original) CSV file")
-    p.add_argument("file_b", help="Second (modified) CSV file")
-    p.add_argument(
-        "--key",
-        default=None,
-        help="Column name to use as unique row key",
-    )
-    p.add_argument(
-        "--delimiter",
-        default=",",
-        help="CSV delimiter character (default: ',')",
-    )
-    p.add_argument(
-        "--format",
-        dest="fmt",
-        choices=["text", "json", "summary"],
-        default="text",
-        help="Output format (default: text)",
-    )
-    p.add_argument(
-        "--filter",
-        dest="filter_expr",
-        default=None,
-        metavar="EXPR",
-        help="Filter rows before diffing, e.g. 'status=active' or 'dept!=hr'",
-    )
+    p = argparse.ArgumentParser(prog="csv-diff", description="Compare two CSV files")
+    p.add_argument("file_a")
+    p.add_argument("file_b")
+    p.add_argument("--key", default="id")
+    p.add_argument("--delimiter", default=",")
+    p.add_argument("--format", choices=["text", "json", "summary"], default="text")
+    p.add_argument("--filter", dest="filter_expr", default=None)
+    p.add_argument("--stats", action="store_true")
+    p.add_argument("--select", default=None)
+    p.add_argument("--rename", default=None)
+    p.add_argument("--patch", action="store_true")
+    p.add_argument("--export", dest="export_path", default=None)
+    p.add_argument("--merge", dest="file_c", default=None)
+    p.add_argument("--sample", default=None)
+    p.add_argument("--pivot", default=None)
+    p.add_argument("--group-by", dest="group_by", default=None)
     return p
 
 
-def main(argv=None) -> int:
+def main(args=None):
     parser = build_parser()
-    args = parser.parse_args(argv)
+    ns = parser.parse_args(args)
 
     try:
-        rows_a = load_csv(args.file_a, delimiter=args.delimiter)
-        rows_b = load_csv(args.file_b, delimiter=args.delimiter)
+        rows_a = load_csv(ns.file_a, delimiter=ns.delimiter)
+        rows_b = load_csv(ns.file_b, delimiter=ns.delimiter)
 
-        rows_a = filter_rows(rows_a, args.filter_expr)
-        rows_b = filter_rows(rows_b, args.filter_expr)
+        if ns.filter_expr:
+            f = parse_filter(ns.filter_expr)
+            rows_a = apply_filter(rows_a, f)
+            rows_b = apply_filter(rows_b, f)
 
-        result = diff_csv(rows_a, rows_b, key=args.key)
-        print(render(result, fmt=args.fmt))
-        return 0 if not result.has_diff else 1
+        if ns.select:
+            cols = parse_columns(ns.select)
+            renames = parse_rename(ns.rename) if ns.rename else {}
+            rows_a = apply_transforms(rows_a, cols, renames)
+            rows_b = apply_transforms(rows_b, cols, renames)
 
-    except (CSVParseError, DiffError, FilterError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
+        if ns.pivot:
+            spec = parse_pivot_spec(ns.pivot)
+            rows_a = pivot_to_rows(pivot_rows(rows_a, spec))
+            rows_b = pivot_to_rows(pivot_rows(rows_b, spec))
 
+        result = diff_csv(rows_a, rows_b, key=ns.key)
 
-if __name__ == "__main__":
-    sys.exit(main())
+        if ns.file_c:
+            rows_c = load_csv(ns.file_c, delimiter=ns.delimiter)
+            result2 = diff_csv(rows_a, rows_c, key=ns.key)
+            result = merge_diffs(result, result2)
+
+        if ns.sample:
+            n = parse_sample_size(ns.sample)
+            result = sample_diff(result, n)
+
+        if ns.patch:
+            lines = patch_to_csv_lines(patch_rows(rows_a, result))
+            print("\n".join(lines))
+            return
+
+        if ns.export_path:
+            export(result, ns.export_path)
+
+        print(render(result, fmt=ns.format))
+
+        if ns.stats:
+            print(format_stats(compute_stats(result)))
+
+        if ns.group_by:
+            col = parse_group_by(ns.group_by)
+            agg = aggregate_diff(result, col)
+            print(format_aggregate(agg))
+
+    except (CSVParseError, DiffError, FilterError, TransformError,
+            PatchError, ExportError, MergeError, SampleError,
+            PivotError, AggregateError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
