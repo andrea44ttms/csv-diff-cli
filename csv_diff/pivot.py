@@ -28,9 +28,10 @@ def pivot_rows(
     col_key: str,
     value_key: str,
 ) -> PivotResult:
-    for required in (row_key, col_key, value_key):
-        if rows and required not in rows[0]:
-            raise PivotError(f"Column {required!r} not found in rows")
+    if rows:
+        missing = [c for c in (row_key, col_key, value_key) if c not in rows[0]]
+        if missing:
+            raise PivotError(f"Column(s) not found in rows: {', '.join(repr(c) for c in missing)}")
 
     result = PivotResult(row_keys=[row_key], col_key=col_key, value_key=value_key)
     for row in rows:
