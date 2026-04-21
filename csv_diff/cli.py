@@ -1,158 +1,253 @@
-"""Command-line interface for csv-diff-cli."""
+"""cli.py – command-line entry point for csv-diff-cli."""
 from __future__ import annotations
 
 import sys
+import argparse
+from typing import Optional
 
-import click
-
-from csv_diff.aliaser import alias_rows, parse_alias_map
-from csv_diff.annotator import annotate_rows, parse_label_map
-from csv_diff.differ import diff_csv
-from csv_diff.exporter import export
-from csv_diff.filter import filter_rows, parse_filter
+from csv_diff.parser import load_csv, get_headers, CSVParseError
+from csv_diff.differ import diff_csv, DiffError
 from csv_diff.formatter import render
-from csv_diff.parser import load_csv
-from csv_diff.redactor import parse_redact_columns, redact_rows
-from csv_diff.sampler import parse_sample_size, sample_diff
-from csv_diff.scorer import compute_score, format_score
-from csv_diff.sorter import parse_sort_keys, sort_rows
+from csv_diff.filter import parse_filter, apply_filter, FilterError
+from csv_diff.sorter import parse_sort_keys, sort_rows, SortError
 from csv_diff.stats import compute_stats, format_stats
-from csv_diff.transformer import apply_transforms, parse_columns, parse_rename
-from csv_diff.truncator import parse_max_rows, truncate_diff
-from csv_diff.aggregator import aggregate_diff, parse_group_by
-from csv_diff.pivot import parse_pivot_spec, pivot_to_rows
-from csv_diff.joiner import join_diff_rows, parse_join_key
-from csv_diff.lineage import LineageResult, add, parse_lineage_flag, summary
-from csv_diff.normalizer import normalize_row, parse_normalize_options
+from csv_diff.transformer import parse_columns, parse_rename, apply_transforms, TransformError
+from csv_diff.patcher import patch_rows, patch_to_csv_lines, PatchError
+from csv_diff.exporter import export, ExportError
+from csv_diff.merger import merge_diffs, MergeError
+from csv_diff.validator import parse_rules, validate_rows, ValidationError
+from csv_diff.profiler import profile_rows, ProfileError
+from csv_diff.sampler import parse_sample_size, sample_diff, SampleError
+from csv_diff.highlighter import highlight_rows, HighlightError
+from csv_diff.pivot import parse_pivot_spec, pivot_to_rows, PivotError
+from csv_diff.aggregator import parse_group_by, aggregate, AggregateError
+from csv_diff.deduplicator import parse_key_columns, deduplicate_rows, DeduplicateError
+from csv_diff.annotator import parse_label_map, annotate_rows, AnnotateError
+from csv_diff.truncator import parse_max_rows, truncate_diff, TruncateError
+from csv_diff.normalizer import parse_normalize_options, normalize_rows, NormalizeError
+from csv_diff.scorer import compute_score, format_score
+from csv_diff.joiner import parse_join_key, join_diff_rows, JoinError
+from csv_diff.lineage import build as build_lineage, parse_lineage_flag, LineageError
+from csv_diff.redactor import parse_redact_columns, redact_rows, RedactError
+from csv_diff.chunker import parse_chunk_size, chunk_diff, ChunkError
+from csv_diff.aliaser import parse_alias_map, alias_rows, AliasError
+from csv_diff.masker import parse_mask_spec, mask_rows, MaskError
 
 
-def build_parser():
-    return main
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="csv-diff",
+        description="Compare two CSV files and highlight differences.",
+    )
+    p.add_argument("file_a", help="First (base) CSV file")
+    p.add_argument("file_b", help="Second (new) CSV file")
+    p.add_argument("--delimiter", default=",", help="CSV delimiter (default: comma)")
+    p.add_argument("--key", default=None, help="Column to use as row key")
+    p.add_argument(
+        "--format", dest="fmt", choices=["text", "json", "summary"], default="text"
+    )
+    p.add_argument("--filter", dest="filter_expr", default=None)
+    p.add_argument("--sort", dest="sort_keys", default=None)
+    p.add_argument("--stats", action="store_true")
+    p.add_argument("--select", dest="select_cols", default=None)
+    p.add_argument("--rename", dest="rename_cols", default=None)
+    p.add_argument("--patch", dest="patch_out", default=None)
+    p.add_argument("--export", dest="export_out", default=None)
+    p.add_argument("--export-format", dest="export_fmt", choices=["csv", "json", "jsonl"], default="csv")
+    p.add_argument("--merge", dest="merge_file", default=None)
+    p.add_argument("--validate", dest="validate_rules", default=None)
+    p.add_argument("--profile", action="store_true")
+    p.add_argument("--sample", dest="sample_size", default=None)
+    p.add_argument("--highlight", action="store_true")
+    p.add_argument("--pivot", dest="pivot_spec", default=None)
+    p.add_argument("--group-by", dest="group_by", default=None)
+    p.add_argument("--dedup", dest="dedup_keys", default=None)
+    p.add_argument("--annotate", dest="label_map", default=None)
+    p.add_argument("--max-rows", dest="max_rows", default=None)
+    p.add_argument("--normalize", dest="normalize_opts", default=None)
+    p.add_argument("--score", action="store_true")
+    p.add_argument("--join", dest="join_file", default=None)
+    p.add_argument("--join-key", dest="join_key", default=None)
+    p.add_argument("--lineage", dest="lineage_flag", default=None)
+    p.add_argument("--redact", dest="redact_cols", default=None)
+    p.add_argument("--chunk-size", dest="chunk_size", default=None)
+    p.add_argument("--alias", dest="alias_map", default=None)
+    p.add_argument("--mask", dest="mask_spec", default=None)
+    return p
 
 
-@click.command()
-@click.argument("file_a", type=click.Path(exists=True))
-@click.argument("file_b", type=click.Path(exists=True))
-@click.option("--key", default="id", show_default=True, help="Key column name.")
-@click.option("--delimiter", default=",", show_default=True)
-@click.option("--format", "fmt", default="text", type=click.Choice(["text", "json", "summary"]), show_default=True)
-@click.option("--filter", "filter_expr", default=None)
-@click.option("--sort", "sort_expr", default=None)
-@click.option("--columns", default=None)
-@click.option("--rename", "rename_expr", default=None)
-@click.option("--stats", is_flag=True, default=False)
-@click.option("--score", is_flag=True, default=False)
-@click.option("--sample", "sample_size", default=None)
-@click.option("--max-rows", default=None)
-@click.option("--group-by", "group_by_expr", default=None)
-@click.option("--redact", "redact_expr", default=None)
-@click.option("--annotate", "annotate_expr", default=None)
-@click.option("--pivot", "pivot_expr", default=None)
-@click.option("--join", "join_file", default=None, type=click.Path(exists=True))
-@click.option("--join-key", default=None)
-@click.option("--lineage", "lineage_flag", default=None)
-@click.option("--normalize", "normalize_expr", default=None)
-@click.option("--alias", "alias_expr", default=None, help="Column alias map, e.g. 'name=Full Name,dept=Department'.")
-@click.option("--export", "export_path", default=None)
-@click.option("--export-format", default="csv", type=click.Choice(["csv", "json", "jsonl"]))
-def main(
-    file_a, file_b, key, delimiter, fmt, filter_expr, sort_expr, columns,
-    rename_expr, stats, score, sample_size, max_rows, group_by_expr,
-    redact_expr, annotate_expr, pivot_expr, join_file, join_key,
-    lineage_flag, normalize_expr, alias_expr, export_path, export_format,
-):
-    """Compare FILE_A and FILE_B and report differences."""
+def main(args=None):
+    """Entry point; returns exit code."""
+    parser = build_parser()
+    ns = parser.parse_args(args)
+
     try:
-        rows_a = load_csv(file_a, delimiter=delimiter)
-        rows_b = load_csv(file_b, delimiter=delimiter)
+        rows_a = load_csv(ns.file_a, delimiter=ns.delimiter)
+        rows_b = load_csv(ns.file_b, delimiter=ns.delimiter)
+        headers = get_headers(ns.file_a, delimiter=ns.delimiter)
 
-        if normalize_expr:
-            opts = parse_normalize_options(normalize_expr)
-            rows_a = [normalize_row(r, opts) for r in rows_a]
-            rows_b = [normalize_row(r, opts) for r in rows_b]
+        # --normalize
+        if ns.normalize_opts:
+            opts = parse_normalize_options(ns.normalize_opts)
+            rows_a = normalize_rows(rows_a, opts)
+            rows_b = normalize_rows(rows_b, opts)
 
-        if filter_expr:
-            f = parse_filter(filter_expr)
-            rows_a = filter_rows(rows_a, f)
-            rows_b = filter_rows(rows_b, f)
+        # --select / --rename
+        if ns.select_cols:
+            cols = parse_columns(ns.select_cols)
+            rows_a = apply_transforms(rows_a, cols, {})
+            rows_b = apply_transforms(rows_b, cols, {})
+            headers = cols
+        if ns.rename_cols:
+            rmap = parse_rename(ns.rename_cols)
+            rows_a = apply_transforms(rows_a, list(headers), rmap)
+            rows_b = apply_transforms(rows_b, list(headers), rmap)
 
-        if sort_expr:
-            keys = parse_sort_keys(sort_expr)
+        # --filter
+        if ns.filter_expr:
+            col, val = parse_filter(ns.filter_expr)
+            rows_a = apply_filter(rows_a, col, val)
+            rows_b = apply_filter(rows_b, col, val)
+
+        # --sort
+        if ns.sort_keys:
+            keys = parse_sort_keys(ns.sort_keys)
             rows_a = sort_rows(rows_a, keys)
             rows_b = sort_rows(rows_b, keys)
 
-        result = diff_csv(rows_a, rows_b, key=key)
+        # --dedup
+        if ns.dedup_keys:
+            key_cols = parse_key_columns(ns.dedup_keys)
+            rows_a = deduplicate_rows(rows_a, key_cols).rows
+            rows_b = deduplicate_rows(rows_b, key_cols).rows
 
-        if redact_expr:
-            cols = parse_redact_columns(redact_expr)
-            result = redact_rows(result, cols)
+        # --mask
+        if ns.mask_spec:
+            mask_spec = parse_mask_spec(ns.mask_spec)
+            rows_a = mask_rows(rows_a, mask_spec).rows
+            rows_b = mask_rows(rows_b, mask_spec).rows
 
-        if alias_expr:
-            alias_map = parse_alias_map(alias_expr)
-            all_rows = result.added + result.removed + result.modified + result.unchanged
-            alias_result = alias_rows(all_rows, alias_map)
-            _map = {id(old): new for old, new in zip(all_rows, alias_result.rows)}
-            result = type(result)(
-                added=[_map[id(r)] for r in result.added],
-                removed=[_map[id(r)] for r in result.removed],
-                modified=[_map[id(r)] for r in result.modified],
-                unchanged=[_map[id(r)] for r in result.unchanged],
-            )
+        # --redact
+        if ns.redact_cols:
+            rcols = parse_redact_columns(ns.redact_cols)
+            rows_a = redact_rows(rows_a, rcols).rows
+            rows_b = redact_rows(rows_b, rcols).rows
 
-        if columns or rename_expr:
-            col_list = parse_columns(columns) if columns else None
-            ren_map = parse_rename(rename_expr) if rename_expr else None
-            result = apply_transforms(result, col_list, ren_map)
+        result = diff_csv(rows_a, rows_b, key=ns.key)
 
-        if annotate_expr is not None:
-            label_map = parse_label_map(annotate_expr)
-            result = annotate_rows(result, label_map).result
+        # --merge
+        if ns.merge_file:
+            rows_c = load_csv(ns.merge_file, delimiter=ns.delimiter)
+            result2 = diff_csv(rows_a, rows_c, key=ns.key)
+            result = merge_diffs(result, result2)
 
-        if sample_size:
-            n = parse_sample_size(sample_size)
+        # --join
+        if ns.join_file and ns.join_key:
+            join_rows = load_csv(ns.join_file, delimiter=ns.delimiter)
+            jkey = parse_join_key(ns.join_key)
+            result = join_diff_rows(result, join_rows, jkey)
+
+        # --sample
+        if ns.sample_size:
+            n = parse_sample_size(ns.sample_size)
             result = sample_diff(result, n)
 
-        if max_rows:
-            n = parse_max_rows(max_rows)
+        # --max-rows
+        if ns.max_rows:
+            n = parse_max_rows(ns.max_rows)
             result = truncate_diff(result, n).result
 
-        if pivot_expr:
-            spec = parse_pivot_spec(pivot_expr)
-            all_rows = result.added + result.removed + result.modified + result.unchanged
-            pivoted = pivot_to_rows(all_rows, spec)
-            click.echo(pivoted)
-            return
+        # --annotate
+        if ns.label_map is not None:
+            lmap = parse_label_map(ns.label_map)
+            result = annotate_rows(result, lmap).result
 
-        if join_file and join_key:
-            extra_rows = load_csv(join_file, delimiter=delimiter)
-            jk = parse_join_key(join_key)
-            result = join_diff_rows(result, extra_rows, jk).result
+        # --alias
+        if ns.alias_map:
+            amap = parse_alias_map(ns.alias_map)
+            result = alias_rows(result, amap).result
 
-        output = render(result, fmt)
+        # --pivot
+        if ns.pivot_spec:
+            pspec = parse_pivot_spec(ns.pivot_spec)
+            rows_out = pivot_to_rows(result, pspec)
+            print("\n".join(str(r) for r in rows_out))
+            return 0
 
-        if group_by_expr:
-            gb = parse_group_by(group_by_expr)
-            agg = aggregate_diff(result, gb)
-            output = output + "\n" + str(agg)
+        # --group-by
+        if ns.group_by:
+            gcol = parse_group_by(ns.group_by)
+            agg = aggregate(result, gcol)
+            for grp, stats in agg.groups.items():
+                print(f"{grp}: +{stats.added} -{stats.removed} ~{stats.modified} ={stats.unchanged}")
+            return 0
 
-        if stats:
-            s = compute_stats(result)
-            output = output + "\n" + format_stats(s)
+        # --validate
+        if ns.validate_rules:
+            rules = parse_rules(ns.validate_rules)
+            vresult = validate_rows(rows_b, rules)
+            for err in vresult.errors:
+                print(f"VALIDATION ERROR: {err}", file=sys.stderr)
+            if not vresult.valid:
+                return 2
 
-        if score:
-            sc = compute_score(result)
-            output = output + "\n" + format_score(sc)
+        # --chunk-size
+        if ns.chunk_size:
+            csz = parse_chunk_size(ns.chunk_size)
+            chunks = chunk_diff(result, csz)
+            for i, chunk in enumerate(chunks.chunks, 1):
+                print(f"--- chunk {i} ---")
+                print(render(chunk, ns.fmt))
+            # stats / score still printed below if requested
+            if ns.stats:
+                stats = compute_stats(result)
+                print(format_stats(stats))
+            if ns.score:
+                score = compute_score(result)
+                print(format_score(score))
+            return 0
 
-        if lineage_flag and parse_lineage_flag(lineage_flag):
-            lr = LineageResult(steps=[])
-            lr = add(lr, "diff", {"key": key, "file_a": file_a, "file_b": file_b})
-            output = output + "\n" + summary(lr)
+        output = render(result, ns.fmt)
+        print(output)
 
-        click.echo(output)
+        if ns.stats:
+            stats = compute_stats(result)
+            print(format_stats(stats))
 
-        if export_path:
-            export(result, export_path, fmt=export_format)
+        if ns.score:
+            score = compute_score(result)
+            print(format_score(score))
 
-    except Exception as exc:  # noqa: BLE001
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        if ns.profile:
+            pr = profile_rows(rows_b)
+            for col, cp in pr.columns.items():
+                print(f"[profile] {col}: fill={cp.fill_rate:.0%} unique={cp.unique_count}")
+
+        if ns.patch_out:
+            lines = patch_to_csv_lines(result, headers)
+            with open(ns.patch_out, "w", newline="") as fh:
+                fh.write("\n".join(lines))
+
+        if ns.export_out:
+            export(result, ns.export_out, fmt=ns.export_fmt)
+
+        if ns.lineage_flag and parse_lineage_flag(ns.lineage_flag):
+            lin = build_lineage(ns.file_a, ns.file_b, result)
+            print(lin.summary())
+
+        return 0
+
+    except (
+        CSVParseError, DiffError, FilterError, SortError, TransformError,
+        PatchError, ExportError, MergeError, ValidationError, ProfileError,
+        SampleError, HighlightError, PivotError, AggregateError,
+        DeduplicateError, AnnotateError, TruncateError, NormalizeError,
+        JoinError, LineageError, RedactError, ChunkError, AliasError,
+        MaskError,
+    ) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
