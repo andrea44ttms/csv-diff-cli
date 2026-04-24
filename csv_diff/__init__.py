@@ -1,3 +1,3 @@
-"""csv-diff: compare and highlight differences between CSV files."""
-from .differ import diff_csv, DiffResult
-from .aggregator import aggregate_diff, AggregateResult, format_aggregate
+"""csv-diff-cli package."""
+from .differ import DiffResult, diff_csv, has_diff
+from .grouper import GroupResult, group_diff
