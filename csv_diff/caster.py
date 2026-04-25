@@ -81,3 +81,15 @@ def cast_rows(rows: List[Dict[str, str]], specs: List[CastSpec]) -> CastResult:
         rows=casted,
         casted_columns=[s.column for s in specs],
     )
+
+
+def validate_cast_columns(rows: List[Dict[str, str]], specs: List[CastSpec]) -> List[str]:
+    """Return a list of column names in *specs* that are absent from *rows*.
+
+    Useful for surfacing warnings when a cast spec references a column that
+    does not exist in the CSV, which would otherwise silently have no effect.
+    """
+    if not rows or not specs:
+        return []
+    available = set(rows[0].keys())
+    return [spec.column for spec in specs if spec.column not in available]
