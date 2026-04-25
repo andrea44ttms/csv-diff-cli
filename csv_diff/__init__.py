@@ -1,3 +1,3 @@
-"""csv-diff-cli package."""
-from .differ import DiffResult, diff_csv, has_diff
-from .grouper import GroupResult, group_diff
+"""csv-diff-cli: compare and highlight differences between two CSV files."""
+
+__version__ = "0.1.0"
