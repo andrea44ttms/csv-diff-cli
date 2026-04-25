@@ -57,6 +57,14 @@ def test_redact_row_custom_mask():
     assert result["email"] == "REDACTED"
 
 
+def test_redact_row_does_not_mutate_original():
+    """Ensure redact_row returns a new dict and does not modify the input row."""
+    row = {"name": "Alice", "email": "alice@example.com"}
+    original_email = row["email"]
+    redact_row(row, ["email"])
+    assert row["email"] == original_email
+
+
 def test_redact_rows_all_rows():
     rows = _rows()
     result = redact_rows(rows, ["email"])
