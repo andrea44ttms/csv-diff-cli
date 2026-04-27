@@ -19,13 +19,35 @@ class DiffResult:
     def has_diff(self) -> bool:
         return bool(self.added or self.removed or self.modified)
 
+    @property
+    def summary(self) -> dict[str, int]:
+        """Return a count summary of each diff category."""
+        return {
+            "added": len(self.added),
+            "removed": len(self.removed),
+            "modified": len(self.modified),
+            "unchanged": len(self.unchanged),
+        }
+
 
 def diff_csv(
     rows_a: list[dict[str, Any]],
     rows_b: list[dict[str, Any]],
     key: str,
 ) -> DiffResult:
-    """Compare two lists of CSV rows by a key column."""
+    """Compare two lists of CSV rows by a key column.
+
+    Args:
+        rows_a: Rows from the first (original) CSV file.
+        rows_b: Rows from the second (updated) CSV file.
+        key: The column name to use as the unique row identifier.
+
+    Returns:
+        A DiffResult containing added, removed, modified, and unchanged rows.
+
+    Raises:
+        DiffError: If the key column has duplicate or missing values in either input.
+    """
     if not rows_a and not rows_b:
         return DiffResult()
 
